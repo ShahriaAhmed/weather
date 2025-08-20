@@ -18,6 +18,7 @@ export default function WeatherDashboard() {
   const [data, setData] = useState([]);
   const [expandedCity, setExpandedCity] = useState(null);
   const [hourlyData, setHourlyData] = useState({});
+  const [actualHourlyData, setActualHourlyData] = useState({});
   const [minuteData, setMinuteData] = useState({});
   const [loading, setLoading] = useState(true);
 
@@ -37,6 +38,7 @@ export default function WeatherDashboard() {
       const results = await Promise.all(
         stations.map(async (station) => {
           try {
+            // Fetch latest observation to get current temperature and coordinates
             const obsRes = await fetch(`https://api.weather.gov/stations/${station.id}/observations/latest`, {
               headers: { "User-Agent": "MyWeatherApp (myemail@example.com)" }
             });
@@ -44,6 +46,24 @@ export default function WeatherDashboard() {
             const temp = obsData.properties.temperature.value;
             const coords = obsData.geometry.coordinates;
 
+            // Fetch historical observations for today's record high
+            const obsHistoryRes = await fetch(`https://api.weather.gov/stations/${station.id}/observations?limit=100`, {
+              headers: { "User-Agent": "MyWeatherApp (myemail@example.com)" }
+            });
+            const obsHistoryData = await obsHistoryRes.json();
+
+            const todayStr = new Date().toDateString();
+            let recordHigh = null;
+            obsHistoryData.features.forEach((obs) => {
+              const obsTime = new Date(obs.properties.timestamp).toDateString();
+              // Check if the observation is from today and has a valid temperature
+              if (obsTime === todayStr && obs.properties.temperature.value !== null) {
+                const obsF = (obs.properties.temperature.value * 9) / 5 + 32;
+                recordHigh = Math.max(recordHigh || -Infinity, obsF);
+              }
+            });
+
+            // Fetch forecast to get the expected high temperature for the day
             const pointRes = await fetch(`https://api.weather.gov/points/${coords[1]},${coords[0]}`, {
               headers: { "User-Agent": "MyWeatherApp (myemail@example.com)" }
             });
@@ -67,7 +87,8 @@ export default function WeatherDashboard() {
               name: station.name,
               coords: coords,
               currentTemp: temp !== null ? (temp * 9) / 5 + 32 : "N/A",
-              expectedHigh: todayHigh !== null ? todayHigh : "N/A"
+              expectedHigh: todayHigh !== null ? todayHigh : "N/A",
+              recordHigh: recordHigh !== null ? recordHigh : "N/A",
             };
           } catch (e) {
             console.error(`Error fetching data for ${station.name}:`, e);
@@ -75,7 +96,8 @@ export default function WeatherDashboard() {
               id: station.id,
               name: station.name,
               currentTemp: "Error",
-              expectedHigh: "Error"
+              expectedHigh: "Error",
+              recordHigh: "Error"
             };
           }
         })
@@ -96,21 +118,35 @@ export default function WeatherDashboard() {
     if (!coords) return;
 
     try {
+      // Fetch data for the hourly forecast chart
       const pointRes = await fetch(`https://api.weather.gov/points/${coords[1]},${coords[0]}`, {
         headers: { "User-Agent": "MyWeatherApp (myemail@example.com)" }
       });
       const pointData = await pointRes.json();
-
-      const hourlyRes = await fetch(pointData.properties.forecastHourly, {
+      const forecastHourlyRes = await fetch(pointData.properties.forecastHourly, {
         headers: { "User-Agent": "MyWeatherApp (myemail@example.com)" }
       });
-      const hourly = await hourlyRes.json();
-
-      const hours = hourly.properties.periods.slice(0, 12).map((p) => ({
+      const forecastHourlyData = await forecastHourlyRes.json();
+      const hours = forecastHourlyData.properties.periods.slice(0, 12).map((p) => ({
         time: new Date(p.startTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
         temp: p.temperature
       }));
+      setHourlyData((prev) => ({ ...prev, [cityId]: hours }));
 
+
+      // Fetch actual hourly observations for the chart comparison
+      const actualObsRes = await fetch(`https://api.weather.gov/stations/${cityId}/observations?limit=24`, {
+        headers: { "User-Agent": "MyWeatherApp (myemail@example.com)" }
+      });
+      const actualObsData = await actualObsRes.json();
+      const actualHours = actualObsData.features.map((obs) => ({
+        time: new Date(obs.properties.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        temp: obs.properties.temperature.value !== null ? (obs.properties.temperature.value * 9) / 5 + 32 : null
+      })).filter(obs => obs.temp !== null).reverse(); // Filter out nulls and reverse for chronological order
+      setActualHourlyData((prev) => ({ ...prev, [cityId]: actualHours }));
+
+
+      // Fetch the last 5 observations for the small table
       const minuteObsRes = await fetch(`https://api.weather.gov/stations/${cityId}/observations?limit=5`, {
         headers: { "User-Agent": "MyWeatherApp (myemail@example.com)" }
       });
@@ -119,18 +155,25 @@ export default function WeatherDashboard() {
         time: new Date(obs.properties.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
         temp: obs.properties.temperature.value !== null ? (obs.properties.temperature.value * 9) / 5 + 32 : 'N/A'
       }));
-
-      setHourlyData((prev) => ({ ...prev, [cityId]: hours }));
       setMinuteData((prev) => ({ ...prev, [cityId]: minutes }));
+
+
     } catch (err) {
-      console.error(`Error fetching hourly data for ${cityId}:`, err);
+      console.error(`Error fetching data for ${cityId}:`, err);
     }
   };
 
   const chartOptions = {
     responsive: true,
     maintainAspectRatio: false,
-    plugins: { legend: { display: false } },
+    plugins: {
+      legend: {
+        display: true, // Show the legend
+        labels: {
+          color: "white",
+        },
+      },
+    },
     scales: {
       x: { ticks: { color: "white" }, grid: { color: "rgba(255,255,255,0.1)" } },
       y: { ticks: { color: "white" }, grid: { color: "rgba(255,255,255,0.1)" } }
@@ -186,6 +229,7 @@ export default function WeatherDashboard() {
             justify-content: space-between;
             align-items: center;
             cursor: pointer;
+            flex-wrap: wrap; /* Allow summary text to wrap on smaller screens */
           }
 
           .city-title {
@@ -193,6 +237,7 @@ export default function WeatherDashboard() {
             font-size: 1.125rem;
             transition: color 0.3s;
             color: white;
+            min-width: 150px;
           }
 
           .city-title.highlight {
@@ -202,6 +247,7 @@ export default function WeatherDashboard() {
           .summary-text {
             color: #a0aec0;
             font-size: 0.875rem;
+            text-align: right;
           }
 
           .expanded-content {
@@ -286,6 +332,11 @@ export default function WeatherDashboard() {
             padding: 0.25rem;
           }
 
+          .record-high {
+            color: #ef4444; /* A shade of red */
+            font-weight: bold;
+          }
+
           @media (min-width: 768px) {
             .expanded-content {
               flex-direction: row;
@@ -312,17 +363,22 @@ export default function WeatherDashboard() {
               </h2>
               <span className="summary-text">
                 <strong>Current: {typeof item.currentTemp === "number" ? `${item.currentTemp.toFixed(1)}°F` : item.currentTemp} | High: {typeof item.expectedHigh === "number" ? `${item.expectedHigh.toFixed(1)}°F` : item.expectedHigh}</strong>
+                {" | "}
+                <strong className="record-high">
+                  Record High: {typeof item.recordHigh === "number" ? `${item.recordHigh.toFixed(1)}°F` : item.recordHigh}
+                </strong>
               </span>
             </div>
 
-            {expandedCity === item.id && hourlyData[item.id] && (
+            {expandedCity === item.id && hourlyData[item.id] && actualHourlyData[item.id] && (
               <div className="expanded-content">
                 <div className="forecast-table">
                   <table>
                     <thead>
                       <tr>
                         <th className="table-header">Time</th>
-                        <th className="table-header">Temp (°F)</th>
+                        <th className="table-header">Forecast (°F)</th>
+                        <th className="table-header">Actual (°F)</th>
                         <th className="table-header">Projected High (°F)</th>
                       </tr>
                     </thead>
@@ -331,6 +387,10 @@ export default function WeatherDashboard() {
                         <tr key={idx}>
                           <td className="table-cell time">{h.time}</td>
                           <td className="table-cell">{h.temp}</td>
+                          <td className="table-cell">
+                            {/* Display the corresponding actual temp if available */}
+                            {actualHourlyData[item.id].find(a => a.time === h.time)?.temp?.toFixed(1) || 'N/A'}
+                          </td>
                           <td className="table-cell">
                             {typeof item.expectedHigh === "number" ? `${item.expectedHigh.toFixed(1)}` : item.expectedHigh}
                           </td>
@@ -347,18 +407,20 @@ export default function WeatherDashboard() {
                         labels: hourlyData[item.id].map((h) => h.time).reverse(),
                         datasets: [
                           {
-                            label: "Temperature (°F)",
+                            label: "Forecast Temperature (°F)",
                             data: hourlyData[item.id].map((h) => h.temp).reverse(),
-                            borderColor: "rgba(75,192,192,1)",
+                            borderColor: "rgba(255, 255, 0, 0.8)",
+                            backgroundColor: "rgba(255, 255, 0, 0.1)",
                             tension: 0.1,
                             pointBackgroundColor: "white"
                           },
                           {
-                            label: "Daily High",
-                            data: Array(hourlyData[item.id].length).fill(item.expectedHigh).reverse(),
-                            borderColor: "rgba(255, 255, 0, 0.8)",
-                            borderDash: [5, 5],
-                            pointRadius: 0
+                            label: "Actual Temperature (°F)",
+                            data: actualHourlyData[item.id].map((a) => a.temp).reverse(),
+                            borderColor: "rgba(75,192,192,1)",
+                            backgroundColor: "rgba(75,192,192,0.1)",
+                            tension: 0.1,
+                            pointBackgroundColor: "white"
                           }
                         ]
                       }}
